@@ -1,0 +1,30 @@
+#!/bin/zsh
+# Opens the macdash (Mac Health) dashboard, starting its server if it is not running.
+# The server stops itself after 20 minutes with no page open.
+#
+#   macdash             open the dashboard
+#   macdash --no-open   start the server only
+#   macdash --stop      stop the server
+#   macdash --version   print the version
+D=~/.local/share/macdash
+PORT=${MACDASH_PORT:-$(plutil -extract port raw -o - ~/.config/macdash/config.json 2>/dev/null)}
+PORT=${PORT:-47811}
+URL="http://127.0.0.1:$PORT/"
+
+PY=""
+for p in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+  [[ -x $p ]] && "$p" -c 'import sys; sys.exit(sys.version_info < (3, 8))' 2>/dev/null && { PY=$p; break; }
+done
+[[ -n $PY ]] || { echo "macdash needs Python 3.8 or later. Run: xcode-select --install"; exit 1; }
+
+case "$1" in
+  --version) exec "$PY" "$D/server.py" --version ;;
+  --stop) pkill -f "$D/server.py" && echo "Stopped." || echo "Not running."; exit 0 ;;
+esac
+
+if ! curl -fsS -m 1 "${URL}api/ping" >/dev/null 2>&1; then
+  mkdir -p ~/Library/Logs
+  MACDASH_PORT=$PORT nohup "$PY" "$D/server.py" >> ~/Library/Logs/macdash.log 2>&1 </dev/null &
+  for i in {1..40}; do curl -fsS -m 1 "${URL}api/ping" >/dev/null 2>&1 && break; /bin/sleep 0.25; done
+fi
+[[ "$1" == "--no-open" ]] || open "$URL"
