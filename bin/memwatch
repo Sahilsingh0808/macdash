@@ -1,18 +1,27 @@
 #!/bin/zsh
-# Memory and disk watchdog (part of macdash). A LaunchAgent runs it every 5 minutes.
-# Shows a macOS notification when swap, memory pressure or free disk cross a limit, naming the
-# biggest memory users, so they can be stopped before the Mac freezes. It never kills anything.
+# Memory, disk and CPU watchdog (part of macdash). A LaunchAgent runs it every 5 minutes.
+# Shows a macOS notification when swap, memory pressure, free disk or CPU load cross a limit,
+# naming the biggest users so they can be stopped before the Mac freezes. It never kills anything.
 #
 #   memwatch          check once (notifies only if a limit is crossed)
 #   memwatch --test   always notify, to check notifications work
 #   memwatch --report print the current numbers and top users
+#   memwatch --help   print usage
 #
 # Limits. To change one, put e.g. SWAP_GB_MAX=8 in ~/.config/macdash/memwatch.env
+NCPU=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
 SWAP_GB_MAX=$(( $(sysctl -n hw.memsize) / 4 / 1073741824 ))  # swap in use: a quarter of RAM
 FREE_PCT_MIN=15      # "System-wide memory free percentage"
 DISK_GB_MIN=30       # free space on the data volume
+LOAD_MAX=$(( NCPU * 3 ))  # sustained 1-min load average (0 disables)
 QUIET_MIN=30         # minutes between repeat notifications for the same problem
 [[ -r ~/.config/macdash/memwatch.env ]] && source ~/.config/macdash/memwatch.env
+
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+  print "Usage: memwatch [--report | --test | --help]"
+  print "Limits: SWAP_GB_MAX=${SWAP_GB_MAX}G FREE_PCT_MIN=${FREE_PCT_MIN}% DISK_GB_MIN=${DISK_GB_MIN}G LOAD_MAX=${LOAD_MAX} QUIET_MIN=${QUIET_MIN}m"
+  exit 0
+fi
 
 STATE=~/Library/Caches/memwatch; mkdir -p "$STATE"
 LOG=~/Library/Logs/memwatch.log
@@ -20,7 +29,8 @@ LOG=~/Library/Logs/memwatch.log
 swap_gb=$(sysctl -n vm.swapusage | awk '{for(i=1;i<=NF;i++) if($i=="used"){v=$(i+2); sub(/M/,"",v); printf "%.1f", v/1024}}')
 free_pct=$(memory_pressure 2>/dev/null | awk -F': ' '/free percentage/{gsub(/%/,"",$2); print $2+0}')
 disk_gb=$(df -k /System/Volumes/Data | awk 'NR==2{printf "%.1f", $4/1048576}')
-free_pct=${free_pct:-100}; swap_gb=${swap_gb:-0}
+load=$(sysctl -n vm.loadavg | awk '{printf "%.2f", $2}')
+free_pct=${free_pct:-100}; swap_gb=${swap_gb:-0}; load=${load:-0}
 
 # Top memory users, grouped so 17 copies of one thing show as one line.
 top_users() {
@@ -28,39 +38,53 @@ top_users() {
     a=$(ps -o args= -p "$p" 2>/dev/null)
     case "$a" in
       # Claude first: its command line lists tool names (emulator, playwright, codegraph).
-      *claude-code*/claude*|*/.local/share/claude/*) g="Claude sessions" ;;
+      *claude-code*/claude*|*/.local/share/claude/*|*/.local/bin/claude*) g="Claude sessions" ;;
       */Claude.app/*)  g="Claude app" ;;
-      *Virtualization.VirtualMachine*|*OrbStack*) g="Docker/OrbStack" ;;
+      *Virtualization.VirtualMachine*|*com.docker*|*OrbStack*) g="Docker/OrbStack" ;;
       *vitest*)        g="vitest" ;;
       *next-server*|*"next dev"*) g="next dev" ;;
-      *tsc*)           g="tsc" ;;
+      */tsc\ *|*/typescript/lib*) g="tsc" ;;
       *manage.py*|*celery*) g="Django/Celery" ;;
-      *dartaotruntime*|*flutter*|*dart\ *) g="Flutter/Dart" ;;
+      *dartaotruntime*|*flutter*|*"/dart "*) g="Flutter/Dart" ;;
       *qemu-system*|*/emulator/emulator*) g="Android emulator" ;;
       *GradleDaemon*|*KotlinCompile*) g="Gradle" ;;
       *codegraph*)     g="CodeGraph MCP" ;;
       *playwright*)    g="Playwright" ;;
-      *Chrome*)        g="Chrome" ;;
-      *Comet*)         g="Comet" ;;
-      *) g=$(ps -o comm= -p "$p" 2>/dev/null | xargs basename 2>/dev/null) ;;
+      *medley*)        g="Medley" ;;
+      *mediaanalysisd*|*photolibraryd*|*spotlightknowledged*|*mds_stores*|*mdworker*) g="Spotlight/Media" ;;
+      */Google\ Chrome.app/*) g="Chrome" ;;
+      */Visual\ Studio\ Code.app/*) g="VS Code" ;;
+      */Antigravity.app/*) g="Antigravity" ;;
+      */Cursor.app/*)  g="Cursor" ;;
+      */Slack.app/*)   g="Slack" ;;
+      */WhatsApp.app/*) g="WhatsApp" ;;
+      */Comet.app/*)   g="Comet" ;;
+      *.app/*)
+        g=${a%%.app/*}
+        g=${g##*/}
+        ;;
+      *) g=$(ps -o comm= -p "$p" 2>/dev/null); g=${g##*/} ;;
     esac
-    print -r -- "$g|$m"
+    [[ -n "$g" ]] && print -r -- "$g|$m"
   done | awk -F'|' '{v=$2; u=substr(v,length(v)); n=v+0; if(u=="G")n*=1024; else if(u=="K")n/=1024; else if(u!="M")n/=1048576; s[$1]+=n; c[$1]++}
     END{for(k in s) printf "%.1f GB  %s (%d)\n", s[k]/1024, k, c[k]}' | sort -rn | head -n "${1:-5}"
 }
 
 if [[ "$1" == "--report" ]]; then
-  echo "swap ${swap_gb} GB used (limit ${SWAP_GB_MAX}), memory ${free_pct}% free (limit ${FREE_PCT_MIN}), disk ${disk_gb} GB free (limit ${DISK_GB_MIN})"
-  top_users 10; exit 0
+  echo "swap ${swap_gb} GB used (limit ${SWAP_GB_MAX}), memory ${free_pct}% free (limit ${FREE_PCT_MIN}), disk ${disk_gb} GB free (limit ${DISK_GB_MIN}), load ${load} (${NCPU} cores)"
+  top_users 10
+  top_cpu=$(ps -Aceo pcpu=,comm= -r 2>/dev/null | head -n 3 | awk '$1 >= 50 {printf "%s%% %s; ", $1, $2}')
+  [[ -n "$top_cpu" ]] && echo "High CPU: ${top_cpu%; }"
+  exit 0
 fi
 
 problems=()
 (( swap_gb > SWAP_GB_MAX ))  && problems+=("swap ${swap_gb} GB")
 (( free_pct < FREE_PCT_MIN )) && problems+=("memory ${free_pct}% free")
 (( disk_gb < DISK_GB_MIN ))  && problems+=("disk ${disk_gb} GB free")
+(( LOAD_MAX > 0 && ${load%.*} >= LOAD_MAX )) && problems+=("CPU load ${load}")
 [[ "$1" == "--test" ]] && problems+=("test")
 
-load=$(sysctl -n vm.loadavg | awk '{print $2}')
 print -r -- "$(date '+%F %T') swap=${swap_gb}G free=${free_pct}% disk=${disk_gb}G load=${load:-0} ${problems[*]}" >> "$LOG"
 (( ${#problems} )) || exit 0
 

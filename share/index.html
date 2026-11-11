@@ -433,7 +433,13 @@ dialog p { margin: 0; color: var(--ink-2); }
     <div class="split disk">
       <section>
         <div class="sec-head"><h2>Biggest space users</h2><span class="sub" id="big-sub"></span>
-          <span class="end" id="big-btn"></span></div>
+          <span class="end" style="display:flex;gap:8px;align-items:center">
+            <span class="seg" id="big-mode" role="group" aria-label="Show system caches or code projects" hidden>
+              <button onclick="setBigMode('sys')" data-b="sys">System &amp; caches</button>
+              <button onclick="setBigMode('code')" data-b="code">Projects</button>
+            </span>
+            <span id="big-btn"></span>
+          </span></div>
         <div class="card pad" id="big"><div class="skel" style="height:260px;margin:14px 0"></div></div>
       </section>
       <section>
@@ -745,23 +751,31 @@ function render(s) {
       `<span class="row-val">${gb(v.mem_gb)}</span>${btn("stop-server:" + v.pid)}`)));
   else rows.push(row("server", "Dev servers", "None running.", ""));
   const cs = s.groups.find(g => g.name === "Claude sessions");
-  if (cs) rows.push(row("spark", "Claude sessions", "Archive finished ones in the Claude app.",
+  if (cs) rows.push(row("spark", "Claude sessions", "Finish or close idle sessions to free memory and MCP servers.",
       `<span class="row-val">${cs.sessions ?? cs.count} · ${gb(cs.gb)}</span>`));
-  s.brew_services.forEach(v => rows.push(row("cup", `Homebrew ${esc(v)} <span class="state on">running</span>`,
-      "Runs all the time, next to Docker's copy.", btn("brew-stop:" + v))));
+  if (s.tmux && s.tmux.total > 0) {
+    const t = s.tmux, dead = (t.dead_shells || []).length;
+    const sub = `${t.attached} attached · ${t.detached} detached` + (dead ? ` · ${dead} idle shell${dead > 1 ? "s" : ""}` : "");
+    rows.push(row("terminal", "tmux sessions", sub,
+        btn("tmux-scan") + (dead ? btn("tmux-clean-dead") : "")));
+  }
+  if (s.orphans && s.orphans.length > 0) {
+    rows.push(row("eye", `Orphaned watchers <span class="state bad">${s.orphans.length}</span>`,
+        "Background tail -f / polling watchers whose parent session exited.", btn("orphans-clean")));
+  }
+  (s.brew_services || []).forEach(v => {
+    const name = typeof v === "string" ? v : v.name, st = typeof v === "string" ? "started" : v.status;
+    const err = st === "error";
+    rows.push(row("cup", `Homebrew ${esc(name)} <span class="state ${err ? "bad" : "on"}">${esc(err ? "error" : "running")}</span>`,
+        err ? "Crash-looping (often a stale lockfile like postmaster.pid)." : "Runs all the time, next to Docker's copy.",
+        btn("brew-stop:" + name)));
+  });
   rows.push(row("bell", `Memory watchdog <span class="state ${s.memwatch ? "on" : "bad"}">${s.memwatch ? "on" : "off"}</span>`,
       "Checks every 5 minutes and notifies when a limit is crossed.", s.memwatch ? btn("memwatch-report") : btn("memwatch-load", "primary")));
   $("running").innerHTML = rows.join("");
 
   /* biggest space users */
-  const bf = s.big_folders, maxb = Math.max(...bf.items.map(b => b.gb), 0.001);
-  $("big-sub").textContent = bf.scanning ? "Measuring…" : bf.at ? "Measured " + ago(bf.at) : "";
-  $("big-btn").innerHTML = `<button class="btn sm ghost" onclick="rescan()" ${bf.scanning ? "disabled" : ""}>${bf.scanning ? '<span class="spin"></span>' : icon("refresh")}Measure again</button>`;
-  $("big").innerHTML = bf.items.length ? bf.items.map(b => `<div class="bar-row" data-tip="${esc(b.path)}">
-      <div class="bar-name">${esc(b.name)}</div><div class="bar-val">${gb(b.gb)}</div>
-      <div class="bar-track"><div class="bar" style="width:${100 * b.gb / maxb}%"></div></div>
-      <div class="bar-extra"><span class="hint">${rich(b.hint)}</span>${b.action ? btn(b.action) : ""}</div></div>`).join("")
-    : `<div class="empty-state"><span class="spin"></span>Measuring folders. This takes about a minute.</div>`;
+  renderBig(s);
 
   /* clean up */
   const sc = (ic, title, what, scan, clean) => {
@@ -770,11 +784,18 @@ function render(s) {
     return row(ic, title, `${what}${scan ? `<div class="scan-res">${r ? "Last scan " + ago(r.at) + ": <b>" + esc(r.summary) + "</b>" : "Not scanned yet."}</div>` : ""}`,
       (scan ? btn(scan) : "") + btn(clean), "stack");
   };
+  const claudeBtns = (ACTIONS["claude-versions-clean"] ? btn("claude-versions-clean") : "") +
+                     (ACTIONS["claude-vm-clean"] ? btn("claude-vm-clean") : "");
   $("scans").innerHTML =
     sc("folder", "Old build folders", "node_modules and friends in projects untouched for 14 days.", "kondo-scan", "kondo-clean") +
-    sc("server", "Finished git worktrees", "Merged, no changes, not in use, 3+ days old.", "worktrees-scan", "worktrees-clean") +
-    sc("trash", "Package caches", "npm, pnpm and uv. They rebuild on the next install.", null, "caches") +
-    sc("box", "Docker leftovers", "Build cache and unused images. Docker must be running.", null, "docker-prune");
+    sc("server", "Finished git worktrees", "Merged, clean, unused, 3+ days old (checks .claude/worktrees too).", "worktrees-scan", "worktrees-clean") +
+    sc("folder", "Stale .next / .turbo caches", "Build outputs >=100 MB untouched for 3+ days inside active projects.", "next-scan", "next-clean") +
+    sc("trash", "Package & temp caches", "npm, pnpm, uv, pip, pending ShipIt updates and pytest temp folders.", null, "caches") +
+    sc("doc", "Old AI session logs", "Claude Code and Antigravity transcripts older than 14 days.", null, "ai-logs-clean") +
+    sc("eye", "Playwright browsers", "Cached headless browsers in ~/Library/Caches/ms-playwright*.", null, "playwright-clean") +
+    (claudeBtns ? row("spark", "Claude CLI & VM files", "Unused old CLI binaries and Cowork Linux VM image.", claudeBtns, "stack") : "") +
+    sc("box", "Docker leftovers", "Build cache and unused images. Docker must be running.", null, "docker-prune") +
+    sc("cup", "Homebrew downloads", "Old downloaded bottles and superseded versions.", null, "brew-cleanup");
 
   $("live").classList.remove("down"); document.body.classList.remove("down");
   $("updated").textContent = "Live · " + new Date(s.at * 1000).toLocaleTimeString();
@@ -837,6 +858,32 @@ function renderApps(s) {
   $("apps-sub").textContent = `${gb(total)} in use, counting memory swapped to disk`;
   $("apps").innerHTML = s.groups.slice(0, 10).map(g => bar(g.name, meta(g), gb(g.gb), 100 * g.gb / mx,
       `${g.name}: ${gb(g.gb)}, ${Math.round(100 * g.gb / total)}% of app memory, ${g.count} process${g.count > 1 ? "es" : ""}`)).join("");
+}
+
+/* biggest space users: system & caches or projects */
+let bigMode = "sys";
+try { bigMode = localStorage.getItem("bigMode") === "code" ? "code" : "sys"; } catch (e) {}
+function setBigMode(mode) {
+  bigMode = mode; try { localStorage.setItem("bigMode", mode); } catch (e) {}
+  if (lastStatus) renderBig(lastStatus);
+}
+function renderBig(s) {
+  const bf = s.big_folders || {}, codeList = bf.code_items || [], hasCode = codeList.length > 0;
+  const modeEl = $("big-mode");
+  if (modeEl) {
+    modeEl.hidden = !hasCode;
+    modeEl.querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.b === bigMode)));
+  }
+  const activeMode = hasCode && bigMode === "code" ? "code" : "sys";
+  const items = activeMode === "code" ? codeList : (bf.items || []);
+  const maxb = Math.max(...items.map(b => b.gb), 0.001);
+  $("big-sub").textContent = bf.scanning ? "Measuring…" : bf.at ? "Measured " + ago(bf.at) : "";
+  $("big-btn").innerHTML = `<button class="btn sm ghost" onclick="rescan()" ${bf.scanning ? "disabled" : ""}>${bf.scanning ? '<span class="spin"></span>' : icon("refresh")}Measure again</button>`;
+  $("big").innerHTML = items.length ? items.map(b => `<div class="bar-row" data-tip="${esc(b.path)}">
+      <div class="bar-name">${esc(b.name)}</div><div class="bar-val">${gb(b.gb)}</div>
+      <div class="bar-track"><div class="bar" style="width:${100 * b.gb / maxb}%"></div></div>
+      <div class="bar-extra"><span class="hint">${rich(b.hint)}</span>${b.action ? btn(b.action) : ""}</div></div>`).join("")
+    : `<div class="empty-state"><span class="spin"></span>Measuring folders. This takes about a minute.</div>`;
 }
 
 /* where the RAM goes: tall segmented bar in Activity Monitor's split */

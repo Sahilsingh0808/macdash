@@ -11,10 +11,10 @@ It runs only on your Mac, at `http://127.0.0.1:47811/`, and stops itself after 2
 - **Status**: the most urgent problem (memory, swap, disk or CPU load), with live tiles and 8-hour sparklines.
 - **Trends**: swap, memory free, disk free and CPU load over 1 hour, 8 hours, 24 hours or 7 days, with the limit drawn on each chart.
 - **Where the RAM goes**: app memory, compressed, wired, cached files and free, as Activity Monitor splits it.
-- **Who uses it**: memory or CPU per app, with related processes grouped (all Chrome helpers as one row, all Docker processes as one row).
-- **What's running**: dev servers (`next dev`, Vite, Django and others) with their size and age, Docker and its containers, Homebrew services, Claude Code sessions.
-- **Disk map**: the whole disk, then the biggest known space users: Docker's disk image, Xcode DerivedData, simulators, Android SDK, Gradle, package caches, Homebrew downloads, Downloads.
-- **Clean up**: old `node_modules` and other build folders, finished git worktrees, package caches, Docker build cache.
+- **Who uses it**: memory or CPU per app, with related processes grouped (all Chrome helpers as one row, VS Code, Antigravity, Cursor, Slack, Docker, Spotlight/Media).
+- **What's running**: dev servers (`next dev`, Vite, Django and others) with their size and age, Docker and its containers, Homebrew services (including crash-looping `error` services), Claude Code sessions, detached `tmux` shells, and orphaned `tail` watchers.
+- **Disk map**: the whole disk, then the biggest known space users: Docker's disk image, Claude conversation history & VM bundles, Gemini/Antigravity data, Codex data, Xcode DerivedData, simulators, Android SDK (`$ANDROID_HOME` & Homebrew), Flutter/pub, HuggingFace models, Gradle, package & updater caches (`ShipIt`, `pytest`), Playwright, Homebrew downloads, Downloads, plus a toggle in **Biggest space users** to inspect top project folders inside `code_dir`.
+- **Clean up**: old `node_modules` and other build folders, stale `.next`/`.turbo` caches inside active projects, finished git worktrees (including safe merged `.claude/worktrees`), old AI session logs (>14 days), unused Claude CLI binaries & VM bundles, Playwright/package/temp caches, Docker build cache.
 
 Every chart has a table view. Light and dark mode follow your system.
 
@@ -74,7 +74,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile && source ~/.zprofile
 | `macdash --version` | Prints the version |
 | `memwatch --report` | Prints swap, free memory, free disk and the 10 biggest memory users |
 | `memwatch --test` | Sends a test notification |
-| `~/.local/share/macdash/mac-cleanup.sh` | Lists caches and finished git worktrees it would remove. Add `--apply` to remove them |
+| `~/.local/share/macdash/mac-cleanup.sh` | Dry run of caches, old AI logs (>14d), finished git worktrees and stale `.next`/`.turbo` caches. Add `--apply` to remove them (`--help` for options) |
 
 Or open **Mac Health** from Spotlight or `~/Applications`.
 
@@ -104,6 +104,7 @@ The watchdog's limits go in `~/.config/macdash/memwatch.env`:
 SWAP_GB_MAX=8      # default: a quarter of your RAM
 FREE_PCT_MIN=15    # memory free percentage, as macOS reports it
 DISK_GB_MIN=30     # free disk in GB
+LOAD_MAX=36        # default: 3x CPU cores (0 disables)
 QUIET_MIN=30       # minutes between repeat notifications for the same problem
 ```
 
