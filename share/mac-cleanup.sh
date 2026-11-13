@@ -222,7 +222,7 @@ if (( ! SKIP_BUILD )); then
     b_total=$((b_total + kb)); b_count=$((b_count + 1))
     echo "${bdir#$CODE/}  ($(size "$bdir"))"
     run "rm -rf '$bdir'"
-  done < <(find "$CODE" -maxdepth 6 \( -name node_modules -o -name .git -o -name .venv -o -name venv -o -name __pycache__ -o -name target -o -name .dart_tool \) -prune -o \( -name .next -o -name .turbo \) -type d -mtime +${BUILD_DAYS} -print 2>/dev/null)
+  done < <(find "$CODE" -maxdepth 12 \( -name node_modules -o -name .git -o -name .venv -o -name venv -o -name __pycache__ -o -name target -o -name .dart_tool \) -prune -o \( -name .next -o -name .turbo \) -type d -mtime +${BUILD_DAYS} -print 2>/dev/null)
   echo "Build caches: $b_count to remove ($(awk "BEGIN{printf \"%.2f\", $b_total/1048576}") GB)."
   echo
 fi
